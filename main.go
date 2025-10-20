@@ -17,7 +17,6 @@ func main() {
 		log.Println("No .env file found")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", handleHealth)
 
 	user := os.Getenv("DB_USER")
 	pass := os.Getenv("DB_PASSWORD")
@@ -27,8 +26,6 @@ func main() {
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4&loc=Local", user, pass, host, port, name)
 	db.Init(dsn)
-
-	// mux.HandleFunc("POST /users", handlers.CreateUser)
 
 	mux.Handle("GET /users/{id}", middleware.Chain(
 		http.HandlerFunc(handlers.GetUser),
@@ -49,6 +46,9 @@ func main() {
 	mux.Handle("GET /mediaitems", middleware.Chain(
 		http.HandlerFunc(handlers.GetMediaItems),
 	))
+	mux.Handle("GET /mediaitems/bytitle", middleware.Chain(
+		http.HandlerFunc(handlers.GetMediaItemsByTitle),
+	))
 	mux.Handle("GET /files/{filename}", middleware.Chain(
 		http.HandlerFunc(handlers.ServeFile),
 	))
@@ -66,8 +66,4 @@ func main() {
 	))
 
 	http.ListenAndServe(":8080", mux)
-}
-
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "health ok")
 }

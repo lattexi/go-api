@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"log"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -16,9 +17,15 @@ func Init(dsn string) {
 		log.Fatal(err)
 	}
 
-	if err := DB.Ping(); err != nil {
-		log.Fatal("Database unreachable:", err)
+	for i := 1; i <= 10; i++ {
+		if err = DB.Ping(); err == nil {
+			log.Println("Database connection established")
+			return
+		}
+		log.Printf("DB not ready (attempt %d/10): %v", i, err)
+		time.Sleep(1 * time.Second)
 	}
+	log.Fatal("Database unreachable:", err)
 
 	log.Println("Database connection established")
 }

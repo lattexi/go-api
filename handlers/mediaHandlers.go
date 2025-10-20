@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"go-api/db"
 	"go-api/tools"
@@ -20,72 +19,92 @@ type MediaItem struct {
 }
 
 func GetMediaItems(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.DB.Query("SELECT media_id, user_id, filename, media_type, title, description, created_at FROM mediaitems")
+	rows, err := db.DB.Query("SELECT media_id, user_id, filename, media_type, title, description, created_at FROM mediaitems ORDER BY created_at DESC")
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	var mediaItems []MediaItem
+	var response []MediaItem
 	for rows.Next() {
 		var item MediaItem
 		err := rows.Scan(&item.MediaID, &item.UserID, &item.Filename, &item.MediaType, &item.Title, &item.Description, &item.CreatedAt)
 		if err != nil {
 			continue
 		}
-		mediaItems = append(mediaItems, item)
+		response = append(response, item)
 	}
 
-	j, err := json.Marshal(mediaItems)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	tools.JSONResponse(w, http.StatusOK, response)
+}
+
+// GET /mediaitems?title={title}
+func GetMediaItemsByTitle(w http.ResponseWriter, r *http.Request) {
+	title := r.URL.Query().Get("title")
+	if title == "" {
+		http.Error(w, "missing title query parameter", http.StatusBadRequest)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(j)
-}
+	rows, err := db.DB.Query(
+		"SELECT media_id, user_id, filename, media_type, title, description, created_at FROM mediaitems WHERE title LIKE ? ORDER BY created_at DESC",
+		"%"+title+"%",
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
 
-type MediaUploadRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	var response []MediaItem
+	for rows.Next() {
+		var item MediaItem
+		err := rows.Scan(&item.MediaID, &item.UserID, &item.Filename, &item.MediaType, &item.Title, &item.Description, &item.CreatedAt)
+		if err != nil {
+			continue
+		}
+		response = append(response, item)
+	}
+
+	tools.JSONResponse(w, http.StatusOK, response)
 }
 
 // POST /mediaitems
+type MediaCreateResponse struct {
+	MediaID int64 `json:"media_id"`
+}
+
 func CreateMediaItem(w http.ResponseWriter, r *http.Request) {
-	var req MediaUploadRequest
-	err := r.ParseMultipartForm(10 << 20)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !tools.ValidateMultipartForm(w, r, "title") {
 		return
 	}
-	claims := tools.GetClaims(r)
+
+	claims, ok := tools.GetClaims(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	userID := claims.UserID
 
-	req.Title = r.FormValue("title")
-	req.Description = r.FormValue("description")
-
-	if req.Title == "" {
-		http.Error(w, "missing required fields", http.StatusBadRequest)
-		return
-	}
-
-	file, handler, err := r.FormFile("file")
+	file, fh, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
-	filename, err := tools.SaveUploadedFile(file, handler, userID)
+	filename, err := tools.SaveUploadedFile(file, fh, userID)
 	if err != nil {
 		fmt.Println(err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	result, err := db.DB.Exec("INSERT INTO mediaitems (user_id, filename, title, description, media_type) VALUES (?, ?, ?, ?, ?)", userID, filename, req.Title, req.Description, "image/jpeg")
+	title := r.FormValue("title")
+	description := r.FormValue("description")
+
+	mimetype, _ := tools.DetectFileType(file)
+
+	result, err := db.DB.Exec("INSERT INTO mediaitems (user_id, filename, title, description, media_type) VALUES (?, ?, ?, ?, ?)", userID, filename, title, description, mimetype)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -97,9 +116,8 @@ func CreateMediaItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	fmt.Fprintf(w, `{"media_id": %d}`, id)
+	response := MediaCreateResponse{MediaID: id}
+	tools.JSONResponse(w, http.StatusCreated, response)
 }
 
 // GET /files/{filename}
@@ -120,16 +138,16 @@ type MediaDeleteRequest struct {
 
 func DeleteMediaItem(w http.ResponseWriter, r *http.Request) {
 	var req MediaDeleteRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	tools.ValidateJSON(w, r, &req)
+
+	claims, ok := tools.GetClaims(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	claims := tools.GetClaims(r)
 	userID := claims.UserID
 
-	rows, err := db.DB.Exec("DELETE FROM mediaitems WHERE media_id = ? AND user_id = ?", req.MediaID, userID)
+	rows, err := db.DB.ExecContext(r.Context(), "DELETE FROM mediaitems WHERE media_id = ? AND user_id = ?", req.MediaID, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -154,17 +172,14 @@ type MediaUpdateRequest struct {
 
 func UpdateMediaItem(w http.ResponseWriter, r *http.Request) {
 	var req MediaUpdateRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Title == "" {
-		http.Error(w, "missing required fields", http.StatusBadRequest)
+	tools.ValidateJSON(w, r, &req)
+
+	claims, ok := tools.GetClaims(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	claims := tools.GetClaims(r)
 	userID := claims.UserID
 
 	rows, err := db.DB.Exec("UPDATE mediaitems SET title = ?, description = ? WHERE media_id = ? AND user_id = ?", req.Title, req.Description, req.MediaID, userID)
@@ -172,10 +187,13 @@ func UpdateMediaItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if affected, err := rows.RowsAffected(); err != nil {
+
+	n, err := rows.RowsAffected()
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	} else if affected == 0 {
+	}
+	if n == 0 {
 		http.Error(w, "media item not found or not owned by user", http.StatusNotFound)
 		return
 	}

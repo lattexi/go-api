@@ -43,7 +43,6 @@ func ValidateToken(tokenString string) (*Claims, error) {
 	)
 
 	var secret = []byte(os.Getenv("JWT_SECRET"))
-	fmt.Println(string(secret))
 
 	token, err := parser.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
 		return secret, nil
@@ -63,7 +62,8 @@ type Key string
 
 const UserClaimsKey Key = "1"
 
-func GetClaims(r *http.Request) *Claims {
-	c := r.Context().Value(UserClaimsKey).(*Claims)
-	return c
+func GetClaims(r *http.Request) (*Claims, bool) {
+	v := r.Context().Value(UserClaimsKey)
+	c, ok := v.(*Claims)
+	return c, ok
 }
